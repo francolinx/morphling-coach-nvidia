@@ -227,11 +227,14 @@ def build_prompt(match: dict, corpus_chunks: list, memory_context: str = "") -> 
     )
     memory_block = ""
     if memory_context:
-        memory_block = f"""=== Episodic memory (your prior sessions with this player) ===
+        memory_block = f"""=== Episodic memory: YOU HAVE COACHED THIS PLAYER BEFORE ===
 {memory_context}
 
-Use this history to make the coaching personal and to track whether recurring \
-mistakes are improving. Reference it explicitly in the Coach Memory Note.
+You are not meeting this player for the first time. Reference these prior \
+patterns directly in your analysis — call out whether the recurring mistakes \
+above are improving or persisting in THIS match, and make the Coach Memory Note \
+explicitly build on this history (e.g. "Same overextending pattern as your last \
+two games"). Do not ignore this section.
 
 """
     return f"""=== Match data ===
@@ -359,11 +362,14 @@ def coach_match(match: dict) -> str:
     player = match.get("player", {})
     hero = player.get("hero", "morphling")
     role = player.get("role", "mid")
+    # NOTE: do NOT exclude the current match_id. The current match is stored
+    # AFTER we build context, so it can't leak into its own first run — but a
+    # SECOND run of the same match SHOULD see the prior session. Excluding by
+    # match_id silently wiped the only record on a rerun (the demo bug).
     memory_context = ""
     if memory is not None:
         try:
-            memory_context = memory.build_memory_context(
-                hero=hero, role=role, exclude_match_id=match.get("match_id"))
+            memory_context = memory.build_memory_context(hero=hero, role=role)
         except Exception:
             memory_context = ""
 
