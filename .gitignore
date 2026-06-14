@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+audit_log.jsonl
+coach_memory.json
+node_modules/
