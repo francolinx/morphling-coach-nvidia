@@ -19,6 +19,11 @@ from pathlib import Path
 
 import requests
 
+try:
+    import rag  # semantic RAG (ChromaDB + nomic-embed-text); degrades on its own
+except Exception:  # pragma: no cover - rag should always import, but never hard-fail
+    rag = None
+
 # ============================================================================
 # CONFIG — driven entirely by env vars so the dashboard can point us anywhere
 # ============================================================================
@@ -52,11 +57,47 @@ def load_corpus():
     return chunks
 
 
-def retrieve(chunks, query: str, match: dict, max_chunks: int = 5):
-    """Pick the most relevant corpus chunks based on game state and query.
+def _match_query(match: dict) -> str:
+    """Build a natural-language retrieval query from the match data."""
+    p = match.get("player", {})
+    lp = match.get("lane_phase", {})
+    enemy_mid = lp.get("enemy_mid", "")
+    enemies = ", ".join(match.get("enemy_lineup", []))
+    death_ctx = " ".join(d.get("context", "") for d in match.get("deaths", []))
+    return (
+        f"{p.get('hero', 'morphling')} {p.get('role', 'mid')} laning analysis, "
+        f"last hits, deaths and itemization vs enemy mid {enemy_mid}; "
+        f"enemy lineup {enemies}; mistakes: {death_ctx}"
+    ).strip()
 
-    For v0 we use simple heuristics rather than embeddings — it's faster to
-    debug and the corpus is small (21 files).
+
+def _match_phase(match: dict) -> str:
+    """Pick the most relevant laning phase bucket for biasing retrieval."""
+    deaths_early = match.get("lane_phase", {}).get("deaths_0_10min", 0)
+    return "laning_6_10min" if deaths_early else "laning_3_6min"
+
+
+def get_corpus_context(match: dict, top_k: int = 5):
+    """Semantic RAG retrieval with a keyword fallback baked in.
+
+    Tries rag.retrieve() (ChromaDB + embeddings). If the rag module itself is
+    missing, falls back to the local keyword heuristic so the demo never fails.
+    """
+    if rag is not None:
+        try:
+            hits = rag.retrieve(_match_query(match), phase=_match_phase(match), top_k=top_k)
+            if hits:
+                return hits
+        except Exception:
+            pass
+    chunks = load_corpus()
+    return retrieve(chunks, query="laning analysis", match=match, max_chunks=top_k)
+
+
+def retrieve(chunks, query: str, match: dict, max_chunks: int = 5):
+    """Heuristic keyword retrieval — the ultimate fallback if rag is unavailable.
+
+    Kept deliberately simple; rag.py is the primary semantic path now.
     """
     selected = []
 
@@ -234,8 +275,7 @@ def audit(event: dict):
 # ============================================================================
 def coach_match(match: dict) -> str:
     """Analyze a single match and return coaching markdown."""
-    chunks = load_corpus()
-    relevant = retrieve(chunks, query="laning analysis", match=match)
+    relevant = get_corpus_context(match)
 
     audit({
         "event": "coaching_start",

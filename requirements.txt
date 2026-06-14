@@ -1,0 +1,5 @@
+# ReplaySense — local-only deps (no cloud LLM SDKs)
+requests>=2.31
+chromadb>=0.4
+# Embeddings (nomic-embed-text) and the chat model are served locally via
+# Ollama / Hermes — not pip packages.
