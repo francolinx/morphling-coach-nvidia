@@ -24,6 +24,11 @@ try:
 except Exception:  # pragma: no cover - rag should always import, but never hard-fail
     rag = None
 
+try:
+    import memory  # episodic per-match memory (self-evolving coach)
+except Exception:  # pragma: no cover
+    memory = None
+
 # ============================================================================
 # CONFIG — driven entirely by env vars so the dashboard can point us anywhere
 # ============================================================================
@@ -155,18 +160,27 @@ One sentence summarizing the player's primary growth area.
 Tone: Direct, specific, professional. This is competitive coaching."""
 
 
-def build_prompt(match: dict, corpus_chunks: list) -> str:
+def build_prompt(match: dict, corpus_chunks: list, memory_context: str = "") -> str:
     corpus_text = "\n\n---\n\n".join(
         f"### {c['name']} ({c['phase']})\n{c['text']}"
         for c in corpus_chunks
     )
+    memory_block = ""
+    if memory_context:
+        memory_block = f"""=== Episodic memory (your prior sessions with this player) ===
+{memory_context}
+
+Use this history to make the coaching personal and to track whether recurring \
+mistakes are improving. Reference it explicitly in the Coach Memory Note.
+
+"""
     return f"""=== Match data ===
 {json.dumps(match, indent=2)}
 
 === Corpus context (Morphling knowledge base, patch 7.41b) ===
 {corpus_text}
 
-Produce the coaching review now."""
+{memory_block}Produce the coaching review now."""
 
 
 # ============================================================================
@@ -274,17 +288,34 @@ def audit(event: dict):
 # MAIN COACHING ENTRY POINT
 # ============================================================================
 def coach_match(match: dict) -> str:
-    """Analyze a single match and return coaching markdown."""
+    """Analyze a single match and return coaching markdown.
+
+    Self-evolving loop: load prior-session memory, fold it into the prompt,
+    generate coaching, then persist this session so the next call is smarter.
+    """
     relevant = get_corpus_context(match)
+
+    # --- Episodic memory: what do we know from past sessions? ---
+    player = match.get("player", {})
+    hero = player.get("hero", "morphling")
+    role = player.get("role", "mid")
+    memory_context = ""
+    if memory is not None:
+        try:
+            memory_context = memory.build_memory_context(
+                hero=hero, role=role, exclude_match_id=match.get("match_id"))
+        except Exception:
+            memory_context = ""
 
     audit({
         "event": "coaching_start",
         "match_id": match.get("match_id"),
         "model": MODEL_NAME,
         "corpus_chunks": [c["name"] for c in relevant],
+        "has_memory_context": bool(memory_context),
     })
 
-    user_prompt = build_prompt(match, relevant)
+    user_prompt = build_prompt(match, relevant, memory_context=memory_context)
 
     start = time.time()
     response = call_local_model(SYSTEM_PROMPT, user_prompt, timeout=TIMEOUT)
@@ -297,7 +328,14 @@ def coach_match(match: dict) -> str:
         "response_chars": len(response),
     })
 
-    # Extract memory note from response
+    # --- Persist this session to episodic memory (self-evolving story) ---
+    if memory is not None:
+        try:
+            memory.store_session(match, response)
+        except Exception:
+            pass
+
+    # Legacy flat memory note (kept for back-compat with v0 tooling)
     if "Coach Memory Note" in response:
         memory_section = response.split("Coach Memory Note")[-1].strip()
         memory_note = memory_section.lstrip("#").strip().split("\n")[0]
