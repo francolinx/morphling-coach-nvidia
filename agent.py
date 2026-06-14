@@ -1,7 +1,15 @@
 ﻿"""ReplaySense agent: local-first Dota 2 coach.
 
-Calls a local LLM endpoint (Ollama-compatible /api/chat). To swap to a different
-local model (NIM, llama.cpp, etc), change MODEL_URL and MODEL_NAME below.
+Talks to a LOCAL LLM endpoint. The endpoint type is auto-detected from
+REPLAYSENSE_MODEL_URL so the same code drives any local backend:
+
+  * Hermes / OpenAI-compatible  (URL contains '/v1')  -> POST /v1/chat/completions
+  * Ollama                      (URL contains '/api/chat') -> POST /api/chat
+  * anything ambiguous          -> treated as OpenAI-compatible
+
+Primary target is Hermes on http://localhost:8642/v1 (bearer auth via
+REPLAYSENSE_API_KEY). Ollama on http://localhost:11434/api/chat is the fallback.
+No cloud SDKs — raw `requests` only, everything stays on the box.
 """
 
 import json
@@ -12,10 +20,15 @@ from pathlib import Path
 import requests
 
 # ============================================================================
-# CONFIG — change these when your teammate's model is ready
+# CONFIG — driven entirely by env vars so the dashboard can point us anywhere
 # ============================================================================
-MODEL_URL = os.environ.get("REPLAYSENSE_MODEL_URL", "http://localhost:11434/api/chat")
-MODEL_NAME = os.environ.get("REPLAYSENSE_MODEL_NAME", "qwen3:8b")
+MODEL_URL = os.environ.get("REPLAYSENSE_MODEL_URL", "http://localhost:8642/v1")
+MODEL_NAME = os.environ.get("REPLAYSENSE_MODEL_NAME", "hermes")
+API_KEY = os.environ.get("REPLAYSENSE_API_KEY", "")
+# 120B is slow on first token; default generous and overridable via --timeout / env.
+DEFAULT_TIMEOUT = int(os.environ.get("REPLAYSENSE_TIMEOUT", "180"))
+TIMEOUT = DEFAULT_TIMEOUT
+
 REPO_ROOT = Path(__file__).parent
 CORPUS_DIR = REPO_ROOT / "corpus"
 DATA_DIR = REPO_ROOT / "data"
@@ -116,22 +129,85 @@ Produce the coaching review now."""
 
 
 # ============================================================================
-# LOCAL MODEL CALL
+# LOCAL MODEL CALL — multi-endpoint, auto-detected from the URL
 # ============================================================================
-def call_local_model(system: str, user: str) -> str:
-    """Call Ollama-compatible local model endpoint."""
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": False,
-    }
-    r = requests.post(MODEL_URL, json=payload, timeout=120)
+def detect_endpoint_type(url: str) -> str:
+    """Return 'ollama' or 'openai' based on the URL shape.
+
+    Ollama is only chosen when the URL clearly points at /api/chat. Everything
+    else (including bare hosts and explicit /v1 URLs) is OpenAI-compatible,
+    which is our primary Hermes target.
+    """
+    u = url.lower()
+    if "/api/chat" in u:
+        return "ollama"
+    return "openai"
+
+
+def _openai_chat_url(url: str) -> str:
+    """Normalize an OpenAI-compatible base URL to its chat-completions path."""
+    u = url.rstrip("/")
+    if u.endswith("/chat/completions"):
+        return u
+    if u.endswith("/v1"):
+        return u + "/chat/completions"
+    if "/v1" in u:  # e.g. .../v1/something unexpected — still aim at the standard path
+        return u.split("/v1")[0].rstrip("/") + "/v1/chat/completions"
+    return u + "/v1/chat/completions"
+
+
+def call_local_model(system: str, user: str, timeout: int = None) -> str:
+    """Call the configured local model endpoint and return the text content.
+
+    Supports Ollama (/api/chat) and OpenAI-compatible (/v1/chat/completions)
+    backends, auto-detected from MODEL_URL. Bearer auth is added for the
+    OpenAI path when REPLAYSENSE_API_KEY is set.
+    """
+    if timeout is None:
+        timeout = TIMEOUT
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    kind = detect_endpoint_type(MODEL_URL)
+
+    if kind == "ollama":
+        endpoint = MODEL_URL
+        payload = {"model": MODEL_NAME, "messages": messages, "stream": False}
+        headers = {}
+    else:  # openai-compatible (Hermes / NemoClaw / llama.cpp server / vLLM / NIM)
+        endpoint = _openai_chat_url(MODEL_URL)
+        payload = {"model": MODEL_NAME, "messages": messages, "stream": False}
+        headers = {"Content-Type": "application/json"}
+        if API_KEY:
+            headers["Authorization"] = f"Bearer {API_KEY}"
+
+    r = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
-    data = r.json()
-    return data.get("message", {}).get("content", "")
+    return _extract_content(r.json())
+
+
+def _extract_content(data: dict) -> str:
+    """Pull the assistant text out of either schema, defensively."""
+    # OpenAI-compatible: {"choices": [{"message": {"content": "..."}}]}
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message") or {}
+        content = msg.get("content")
+        if content:
+            return content
+        # Some servers stream-collapse into "text"
+        if choices[0].get("text"):
+            return choices[0]["text"]
+    # Ollama: {"message": {"content": "..."}}
+    msg = data.get("message")
+    if isinstance(msg, dict) and msg.get("content"):
+        return msg["content"]
+    # Ollama /api/generate style fallback
+    if data.get("response"):
+        return data["response"]
+    return ""
 
 
 # ============================================================================
@@ -171,7 +247,7 @@ def coach_match(match: dict) -> str:
     user_prompt = build_prompt(match, relevant)
 
     start = time.time()
-    response = call_local_model(SYSTEM_PROMPT, user_prompt)
+    response = call_local_model(SYSTEM_PROMPT, user_prompt, timeout=TIMEOUT)
     latency_ms = int((time.time() - start) * 1000)
 
     audit({
@@ -192,7 +268,15 @@ def coach_match(match: dict) -> str:
 
 if __name__ == "__main__":
     # CLI mode for quick testing
-    import sys
-    match_path = sys.argv[1] if len(sys.argv) > 1 else "data/demo_match.json"
-    match = json.loads(Path(match_path).read_text())
+    import argparse
+
+    parser = argparse.ArgumentParser(description="ReplaySense local Dota 2 coach")
+    parser.add_argument("match", nargs="?", default="data/demo_match.json",
+                        help="path to a match JSON file")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT,
+                        help="per-request timeout in seconds (120B is slow on first token)")
+    args = parser.parse_args()
+
+    TIMEOUT = args.timeout
+    match = json.loads(Path(args.match).read_text(encoding="utf-8"))
     print(coach_match(match))
