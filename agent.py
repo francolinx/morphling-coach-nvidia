@@ -82,21 +82,68 @@ def _match_phase(match: dict) -> str:
     return "laning_6_10min" if deaths_early else "laning_3_6min"
 
 
+# Maps enemy heroes to the matchup-corpus files that cover them, so the
+# Draft & Counter Analysis section is always grounded in real corpus text.
+_MATCHUP_HINTS = {
+    "viper": "ranged_carries", "drow_ranger": "ranged_carries", "luna": "ranged_carries",
+    "shadow_fiend": "shadowfiend", "shadowfiend": "shadowfiend",
+    "invoker": "invoker", "lina": "lina", "storm_spirit": "storm_spirit", "doom": "doom",
+    "lion": "silence_heroes", "silencer": "silence_heroes", "skywrath_mage": "silence_heroes",
+    "phantom_assassin": "melee_carries", "juggernaut": "melee_carries", "anti_mage": "melee_carries",
+    "zeus": "burst_mages", "lich": "burst_mages", "tinker": "burst_mages",
+}
+
+
+def _ensure_draft_coverage(match: dict, hits: list, max_total: int = 7):
+    """Guarantee matchup chunks for the enemy lineup are in context for the
+    Draft & Counter Analysis section, appending them if RAG ranking missed them."""
+    have = {h.get("id") for h in hits}
+    present_names = {h.get("name", "") for h in hits}
+    enemy = [h.lower() for h in match.get("enemy_lineup", [])]
+    wanted_files = {f"vs_{_MATCHUP_HINTS[e]}" for e in enemy if e in _MATCHUP_HINTS}
+    missing = wanted_files - present_names
+    if not missing:
+        return hits
+
+    try:
+        corpus = rag.load_chunks() if rag is not None else None
+    except Exception:
+        corpus = None
+    if corpus is None:
+        corpus = [{"id": f"{c['phase']}/{c['name']}#0", "phase": c["phase"],
+                   "name": c["name"], "title": c["name"], "text": c["text"]}
+                  for c in load_corpus()]
+
+    for fname in missing:
+        for c in corpus:
+            if c["name"] == fname and c["id"] not in have:
+                hits.append(c)
+                have.add(c["id"])
+                break
+    return hits[:max_total]
+
+
 def get_corpus_context(match: dict, top_k: int = 5):
     """Semantic RAG retrieval with a keyword fallback baked in.
 
     Tries rag.retrieve() (ChromaDB + embeddings). If the rag module itself is
     missing, falls back to the local keyword heuristic so the demo never fails.
+    Always tops up matchup coverage for the enemy lineup.
     """
+    hits = None
     if rag is not None:
         try:
             hits = rag.retrieve(_match_query(match), phase=_match_phase(match), top_k=top_k)
-            if hits:
-                return hits
         except Exception:
-            pass
-    chunks = load_corpus()
-    return retrieve(chunks, query="laning analysis", match=match, max_chunks=top_k)
+            hits = None
+    if not hits:
+        chunks = load_corpus()
+        hits = retrieve(chunks, query="laning analysis", match=match, max_chunks=top_k)
+        # normalize keyword-fallback shape to include an id
+        for c in hits:
+            c.setdefault("id", f"{c.get('phase','')}/{c.get('name','')}#0")
+
+    return _ensure_draft_coverage(match, list(hits))
 
 
 def retrieve(chunks, query: str, match: dict, max_chunks: int = 5):
@@ -135,27 +182,40 @@ SYSTEM_PROMPT = """You are ReplaySense, a local AI coach for competitive Dota 2 
 players running entirely on the user's hardware. You are analyzing a match for \
 a player who specializes in Morphling in the mid lane on patch 7.41b.
 
-Use ONLY the provided match data and corpus context. Do not invent statistics, \
-item timings, or tactical details that are not in the input.
+Use ONLY the provided match data, corpus context, and episodic memory. Do not \
+invent statistics, item timings, hero abilities, or tactical details that are \
+not in the input. Every claim about the enemy draft must come from the \
+enemy_lineup/ally_lineup fields and the matchups corpus — never from imagined \
+screen reading.
 
-Produce coaching output in this exact structure:
+Produce coaching output in this EXACT structure, all six sections, clean markdown:
 
 ## Lane Phase Review
 Two to three sentences comparing actual performance against laning benchmarks. \
-Be specific with numbers from the match data.
+Be specific with numbers from the match data (last hits at 5/10, deaths, GPM/XPM).
 
 ## Death Analysis
 For each death, identify the decision error and what should have been done \
-differently.
+differently. Reference the time and context from the match data.
 
 ## Item Timing
-Identify the single most impactful item timing miss.
+Identify the single most impactful item timing miss and the window it should \
+have landed in.
+
+## Draft & Counter Analysis
+Using enemy_lineup and ally_lineup from the match data PLUS the matchups corpus, \
+tell the player how to itemize and play against THIS enemy draft. Name specific \
+enemy heroes and the concrete counter-play (e.g. "Viper + Drow want a long game; \
+rush Manta by 16:00 and have BKB before fighting into Viper's ultimate"). \
+Ground every recommendation in the listed heroes — this is structured \
+counter-intel, not guesswork.
 
 ## Three Practice Goals
 Numbered list of three specific, measurable goals for the next match.
 
 ## Coach Memory Note
-One sentence summarizing the player's primary growth area.
+One sentence summarizing the player's primary growth area. If episodic memory is \
+provided, explicitly note whether the recurring mistake is improving or persisting.
 
 Tone: Direct, specific, professional. This is competitive coaching."""
 
