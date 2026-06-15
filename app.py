@@ -503,8 +503,13 @@ render_coach_memory()
 # OPENSHELL LIVE AUDIT DASHBOARD
 # ============================================================================
 st.divider()
-st.subheader("🔍 OpenShell Live Audit Log")
-st.caption("Every inference call, embedding request, GSI poll, and memory write — logged in real time. No data leaves the GB10.")
+audit_col1, audit_col2 = st.columns([3, 1])
+with audit_col1:
+    st.subheader("🔍 OpenShell Live Audit Log")
+    st.caption("Every inference call, embedding request, GSI poll, and memory write — logged in real time. No data leaves the GB10.")
+with audit_col2:
+    auto_refresh_audit = st.toggle("Auto-refresh", value=True, key="audit_refresh",
+                                   help="Refresh the audit log every 3 seconds.")
 
 audit_events = get_audit_events(limit=25)
 if not audit_events:
@@ -554,3 +559,8 @@ else:
                 st.info(f"{icon} {when}")
         with col2:
             st.markdown(f"**{label}** · {detail}")
+
+# Auto-refresh the audit log so judges see events appear live
+if auto_refresh_audit:
+    time.sleep(3)
+    st.rerun()

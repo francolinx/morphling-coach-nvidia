@@ -7,3 +7,4 @@ coach_memory.json
 node_modules/
 chroma_store/
 episodic_memory/
+openshell_policy.json
