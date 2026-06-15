@@ -5,6 +5,8 @@
 > Cloud coaches see your scrim data. We don't. Every frame of game state, every
 > coaching token, and every memory of your progress stays on the box.
 
+📊 **[Pitch Deck (Google Slides)](https://docs.google.com/presentation/d/1xJVXCLqSx41y1Yr7Zh32k_3xrvwVjTMl/edit)**
+
 Built at the **Dell × NVIDIA "Local AI on GB10"** hackathon. The whole stack —
 a Hermes agent under **NemoClaw**, **Nemotron 3 Super 120B**, and an
 **OpenShell** sandbox — runs on a **Dell Pro Max with GB10 (NVIDIA Grace
