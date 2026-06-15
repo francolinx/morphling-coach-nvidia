@@ -1,0 +1,11 @@
+# Optional deps for voice.py (local voice coach). Core app does NOT need these.
+# The text path works with only `requests`:  python voice.py --text "..." --no-speak
+#
+# Microphone capture:
+sounddevice>=0.4
+numpy>=1.24
+# Speech-to-text (pick one; faster-whisper is lighter and preferred):
+faster-whisper>=1.0
+# openai-whisper            # alternative STT backend (heavier, needs torch)
+# Text-to-speech (offline; uses Windows SAPI5 under the hood):
+pyttsx3>=2.90
