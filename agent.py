@@ -306,16 +306,19 @@ def call_local_model(system: str, user: str, timeout: int = None) -> str:
         if API_KEY:
             headers["Authorization"] = f"Bearer {API_KEY}"
 
-    # Audit the model call through OpenShell (proves all inference is local)
+    # Verify endpoint is local + audit through OpenShell
     if _sandbox is not None:
         try:
+            _sandbox.verify_local_endpoint(endpoint)  # raises if non-local
             _sandbox.log_model_call(
                 endpoint=endpoint,
                 model=MODEL_NAME,
                 prompt_chars=sum(len(m.get("content", "")) for m in messages),
             )
+        except ValueError:
+            raise  # re-raise endpoint violations
         except Exception:
-            pass
+            pass   # never crash on audit failure
 
     r = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()

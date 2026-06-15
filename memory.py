@@ -14,6 +14,11 @@ import json
 import time
 from pathlib import Path
 
+try:
+    import openshell_sandbox as _sandbox
+except Exception:
+    _sandbox = None
+
 REPO_ROOT = Path(__file__).parent
 EPISODIC_DIR = REPO_ROOT / "episodic_memory"
 
@@ -87,6 +92,12 @@ def store_session(match: dict, coaching_markdown: str,
     }
     path = EPISODIC_DIR / f"{match_id}.json"
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+    # Audit the memory write through OpenShell
+    if _sandbox is not None:
+        try:
+            _sandbox.log_memory_write(match_id, str(path))
+        except Exception:
+            pass
     return path
 
 

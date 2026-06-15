@@ -37,12 +37,18 @@ except Exception:  # noqa: BLE001
     MODEL_URL = os.environ.get("REPLAYSENSE_MODEL_URL", "http://localhost:11434/api/chat")
 
 try:
-    from openshell_sandbox import get_sandbox_status
+    from openshell_sandbox import get_sandbox_status, get_audit_events, get_audit_summary
 except Exception:
     def get_sandbox_status():
         return {"sandboxed": False, "badge": "⚠️ OpenShell not installed",
                 "network_egress": "unrestricted", "data_stays_local": True,
-                "openshell_available": False}
+                "openshell_available": False, "episodic_memory_protected": False}
+    def get_audit_events(limit=20):
+        return []
+    def get_audit_summary():
+        return {"total_model_calls": 0, "total_embed_calls": 0,
+                "violations_blocked": 0, "all_inference_local": True,
+                "total_gsi_polls": 0, "last_model_call": None}
 
 API_KEY = os.environ.get("REPLAYSENSE_API_KEY", "")
 GSI_URL = live_loop.GSI_URL
@@ -285,7 +291,7 @@ with st.sidebar:
     st.header("🔒 OpenShell Sandbox")
     sandbox = get_sandbox_status()
     if sandbox["sandboxed"]:
-        st.success(f"✅ Sandboxed\n\n`{sandbox['sandbox_id']}`")
+        st.success(f"✅ Sandboxed · `{sandbox['sandbox_id']}`")
         st.caption(f"Policy: `{sandbox['policy_name']}`")
     elif sandbox["openshell_available"]:
         st.warning("⚠️ OpenShell installed but not active\n\nRun via `./launch.sh`")
@@ -293,6 +299,13 @@ with st.sidebar:
         st.info("ℹ️ OpenShell not installed\n\nApp still runs 100% local")
     st.caption(f"Network egress: **{sandbox['network_egress']}**")
     st.caption(f"Data stays local: **{'✅ Yes' if sandbox['data_stays_local'] else '❌ No'}**")
+    st.caption(f"Episodic memory protected: **{'✅ Yes' if sandbox.get('episodic_memory_protected') else '⚪ No'}**")
+    # Audit summary stats
+    summary = get_audit_summary()
+    a1, a2, a3 = st.columns(3)
+    a1.metric("Model calls", summary["total_model_calls"])
+    a2.metric("Violations blocked", summary["violations_blocked"])
+    a3.metric("All local", "✅" if summary["all_inference_local"] else "🚨")
     st.divider()
 
     st.header("🛟 Fallback Mode")
@@ -485,3 +498,59 @@ with tab_live:
 st.divider()
 st.subheader("💾 Coach Memory")
 render_coach_memory()
+
+# ============================================================================
+# OPENSHELL LIVE AUDIT DASHBOARD
+# ============================================================================
+st.divider()
+st.subheader("🔍 OpenShell Live Audit Log")
+st.caption("Every inference call, embedding request, GSI poll, and memory write — logged in real time. No data leaves the GB10.")
+
+audit_events = get_audit_events(limit=25)
+if not audit_events:
+    st.caption("No audit events yet. Events appear here as the coach runs.")
+else:
+    # Event type → display config
+    _EVENT_STYLE = {
+        "openshell_model_call":    ("🧠", "Model inference",  "success"),
+        "openshell_embed_call":    ("🔢", "Embedding call",   "success"),
+        "openshell_gsi_poll":      ("📡", "GSI poll",         "info"),
+        "openshell_memory_write":  ("💾", "Memory write",     "info"),
+        "openshell_policy_written":("📋", "Policy written",   "info"),
+        "openshell_sandbox_launch":("🔒", "Sandbox launch",   "success"),
+        "openshell_sandbox_stop":  ("🛑", "Sandbox stopped",  "warning"),
+        "openshell_egress_violation_blocked": ("🚫", "EGRESS BLOCKED", "error"),
+    }
+
+    for ev in audit_events:
+        event_type = ev.get("event", "")
+        icon, label, style = _EVENT_STYLE.get(event_type, ("📌", event_type, "info"))
+        ts = ev.get("timestamp")
+        when = datetime.fromtimestamp(ts).strftime("%H:%M:%S") if ts else "—"
+
+        # Build detail string per event type
+        if event_type == "openshell_model_call":
+            detail = f"`{ev.get('model','?')}` @ `{ev.get('endpoint','?')}` · {ev.get('prompt_chars','?')} chars · {'✅ local' if ev.get('local') else '🚨 NON-LOCAL'}"
+        elif event_type == "openshell_embed_call":
+            detail = f"`{ev.get('model','?')}` @ `{ev.get('endpoint','?')}` · {ev.get('text_chars','?')} chars · {'✅ local' if ev.get('local') else '🚨 NON-LOCAL'}"
+        elif event_type == "openshell_gsi_poll":
+            detail = f"`{ev.get('url','?')}` · {'✅ ok' if ev.get('ok') else '⚪ unreachable'}"
+        elif event_type == "openshell_memory_write":
+            detail = f"match `{ev.get('match_id','?')}` → `{ev.get('path','?')}`"
+        elif event_type == "openshell_egress_violation_blocked":
+            detail = f"🚨 Blocked: `{ev.get('destination','?')}`"
+        else:
+            detail = ""
+
+        col1, col2 = st.columns([1, 5])
+        with col1:
+            if style == "success":
+                st.success(f"{icon} {when}")
+            elif style == "error":
+                st.error(f"{icon} {when}")
+            elif style == "warning":
+                st.warning(f"{icon} {when}")
+            else:
+                st.info(f"{icon} {when}")
+        with col2:
+            st.markdown(f"**{label}** · {detail}")

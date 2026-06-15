@@ -24,6 +24,11 @@ from pathlib import Path
 
 import requests
 
+try:
+    import openshell_sandbox as _sandbox
+except Exception:
+    _sandbox = None
+
 REPO_ROOT = Path(__file__).parent
 DATA_DIR = REPO_ROOT / "data"
 DEMO_MATCH_PATH = DATA_DIR / "demo_match.json"
@@ -99,7 +104,17 @@ def poll_gsi(url: str = None, timeout: float = 2.0) -> dict:
         r = requests.get(url, timeout=timeout)
         r.raise_for_status()
         gsi = r.json()
+        if _sandbox is not None:
+            try:
+                _sandbox.log_gsi_poll(url, ok=True)
+            except Exception:
+                pass
     except Exception as e:  # noqa: BLE001 — UI wants the message, not a crash
+        if _sandbox is not None:
+            try:
+                _sandbox.log_gsi_poll(url, ok=False)
+            except Exception:
+                pass
         return {"ok": False, "raw": None, "clock_s": 0, "note": f"GSI unreachable: {e}"}
 
     clock_s = _extract_clock(gsi)

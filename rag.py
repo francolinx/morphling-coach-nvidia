@@ -19,6 +19,11 @@ from pathlib import Path
 
 import requests
 
+try:
+    import openshell_sandbox as _sandbox
+except Exception:
+    _sandbox = None
+
 REPO_ROOT = Path(__file__).parent
 CORPUS_DIR = REPO_ROOT / "corpus"
 CHROMA_DIR = REPO_ROOT / "chroma_store"
@@ -103,6 +108,15 @@ def corpus_fingerprint(chunks) -> str:
 # ============================================================================
 def embed_text(text: str) -> list:
     """Embed a single string via the local Ollama embeddings endpoint."""
+    # Verify endpoint is local and audit the call
+    if _sandbox is not None:
+        try:
+            _sandbox.verify_local_endpoint(EMBED_URL)
+            _sandbox.log_embed_call(EMBED_URL, EMBED_MODEL, len(text))
+        except ValueError:
+            raise  # re-raise endpoint violations — never silently skip
+        except Exception:
+            pass   # never crash on audit failure
     r = requests.post(
         EMBED_URL,
         json={"model": EMBED_MODEL, "prompt": text},
