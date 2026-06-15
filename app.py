@@ -36,6 +36,14 @@ except Exception:  # noqa: BLE001
     MODEL_NAME = os.environ.get("REPLAYSENSE_MODEL_NAME", "qwen3:8b")
     MODEL_URL = os.environ.get("REPLAYSENSE_MODEL_URL", "http://localhost:11434/api/chat")
 
+try:
+    from openshell_sandbox import get_sandbox_status
+except Exception:
+    def get_sandbox_status():
+        return {"sandboxed": False, "badge": "⚠️ OpenShell not installed",
+                "network_egress": "unrestricted", "data_stays_local": True,
+                "openshell_available": False}
+
 API_KEY = os.environ.get("REPLAYSENSE_API_KEY", "")
 GSI_URL = live_loop.GSI_URL
 
@@ -272,6 +280,19 @@ with st.sidebar:
     st.caption(f"API key: {'set ✓' if API_KEY else 'not set (local, none needed)'}")
     gsi_status = check_endpoint(GSI_URL, timeout=1.0)
     st.caption(f"GSI: {'🟢 live' if gsi_status['up'] else '⚪ no bot match'} · `{GSI_URL}`")
+    st.divider()
+
+    st.header("🔒 OpenShell Sandbox")
+    sandbox = get_sandbox_status()
+    if sandbox["sandboxed"]:
+        st.success(f"✅ Sandboxed\n\n`{sandbox['sandbox_id']}`")
+        st.caption(f"Policy: `{sandbox['policy_name']}`")
+    elif sandbox["openshell_available"]:
+        st.warning("⚠️ OpenShell installed but not active\n\nRun via `./launch.sh`")
+    else:
+        st.info("ℹ️ OpenShell not installed\n\nApp still runs 100% local")
+    st.caption(f"Network egress: **{sandbox['network_egress']}**")
+    st.caption(f"Data stays local: **{'✅ Yes' if sandbox['data_stays_local'] else '❌ No'}**")
     st.divider()
 
     st.header("🛟 Fallback Mode")

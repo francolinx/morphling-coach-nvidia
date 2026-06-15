@@ -29,6 +29,11 @@ try:
 except Exception:  # pragma: no cover
     memory = None
 
+try:
+    import openshell_sandbox as _sandbox  # OpenShell audit logging
+except Exception:  # pragma: no cover
+    _sandbox = None
+
 # ============================================================================
 # CONFIG — driven entirely by env vars so the dashboard can point us anywhere
 # ============================================================================
@@ -300,6 +305,17 @@ def call_local_model(system: str, user: str, timeout: int = None) -> str:
         headers = {"Content-Type": "application/json"}
         if API_KEY:
             headers["Authorization"] = f"Bearer {API_KEY}"
+
+    # Audit the model call through OpenShell (proves all inference is local)
+    if _sandbox is not None:
+        try:
+            _sandbox.log_model_call(
+                endpoint=endpoint,
+                model=MODEL_NAME,
+                prompt_chars=sum(len(m.get("content", "")) for m in messages),
+            )
+        except Exception:
+            pass
 
     r = requests.post(endpoint, json=payload, headers=headers, timeout=timeout)
     r.raise_for_status()
